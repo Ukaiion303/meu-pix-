@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pagamento via Pix</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f7f7f7;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.1);
+      text-align: center;
+      max-width: 400px;
+      width: 100%;
+    }
+    h1 {
+      color: #333;
+    }
+    input, button {
+      padding: 10px;
+      margin: 10px 0;
+      width: 100%;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+    button {
+      background-color: #10b981;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 5px;
+    }
+    button:hover {
+      background-color: #059669;
+    }
+    .pix-info {
+      margin-top: 20px;
+      word-break: break-word;
+    }
+    .copy-btn {
+      background-color: #3b82f6;
+      margin-top: 10px;
+    }
+    .copy-btn:hover {
+      background-color: #2563eb;
+    }
+    #qrCode {
+      margin-top: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Faça seu pagamento</h1>
+    <p>Insira o valor desejado (R$):</p>
+    <input type="number" id="valor" placeholder="0.00" step="0.01" min="0.01" />
+
+    <button onclick="gerarPix()">Gerar Pix</button>
+
+    <div class="pix-info" id="pixInfo" style="display:none;">
+      <p><strong>Código Pix Copia e Cola:</strong></p>
+      <textarea id="pixPayload" rows="4" readonly style="width: 100%; font-size: 14px;"></textarea>
+      <button class="copy-btn" onclick="copiarPix()">Copiar código Pix</button>
+      <p>Ou escaneie o QR Code abaixo:</p>
+      <img id="qrCode" src="" alt="QR Code Pix" width="220" />
+    </div>
+  </div>
+
+  <script>
+    // Função para gerar o payload Pix no formato EMV padrão
+    // Referência: https://www.bcb.gov.br/pom/spb/pix/spb_pix_api.html
+    // Essa função cria o código pix com campos obrigatórios e CRC16 no final
+
+    function toHexString(byteArray) {
+      return Array.from(byteArray, function(byte) {
+        return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+      }).join('');
+    }
+
+    function crc16(str) {
+      // Algoritmo CRC16-CCITT (0xFFFF)
+      let crc = 0xFFFF;
+      for(let i=0; i<str.length; i++) {
+        crc ^= str.charCodeAt(i) << 8;
+        for(let j=0; j<8; j++) {
+          if ((crc & 0x8000) !== 0) crc = (crc << 1) ^ 0x1021;
+          else crc <<= 1;
+          crc &= 0xFFFF;
+        }
+      }
+      return crc.toString(16).toUpperCase().padStart(4,'0');
+    }
+
+    // Função para montar um campo no padrão "ID + tamanho + valor"
+    function montarCampo(id, valor) {
+      const length = valor.length.toString().padStart(2, '0');
+      return id + length + valor;
+    }
+
+    function montarPixPayload({pixKey, nome, cidade, valor}) {
+      // Montagem do payload baseado no padrão EMV do Banco Central
+      // Fonte: https://www.bcb.gov.br/content/estabilidadefinanceira/pix_api_2.0.pdf
+
+      // Payload Format Indicator
+      const payloadFormatIndicator = montarCampo("00", "01");
+      // Merchant Account Information - GUI + chave Pix
+      const gui = montarCampo("00", "BR.GOV.BCB.PIX");
+      const key = montarCampo("01", pixKey);
+      const merchantAccountInfo = montarCampo("26", gui + key);
+      // Merchant Category Code (default 0000)
+      const merchantCategoryCode = montarCampo("52", "0000");
+      // Transaction Currency (986 = BRL)
+      const transactionCurrency = montarCampo("53", "986");
+      // Transaction Amount (optional)
+      const transactionAmount = valor ? montarCampo("54", valor) : "";
+      // Country Code
+      const countryCode = montarCampo("58", "BR");
+      // Merchant Name (max 25 caracteres)
+      const merchantName = montarCampo("59", nome.toUpperCase().substring(0,25));
+      // Merchant City (max 15 caracteres)
+      const merchantCity = montarCampo("60", cidade.toUpperCase().substring(0,15));
+      // Additional Data Field Template - TXID (00 = não informar o TXID)
+      const additionalDataField = montarCampo("62", montarCampo("05", " "));
+
+      // Montar payload sem CRC
+      const payloadSemCRC = payloadFormatIndicator + merchantAccountInfo + merchantCategoryCode + transactionCurrency + transactionAmount + countryCode + merchantName + merchantCity + additionalDataField;
+
+      // Calcular CRC16 do payload + "6304"
+      const crc = crc16(payloadSemCRC + "6304");
+
+      // Campo CRC
+      const crcField = "63" + "04" + crc;
+
+      return payloadSemCRC + crcField;
+    }
+
+    function gerarPix() {
+      const valorInput = document.getElementById('valor').value;
+      if (!valorInput || valorInput <= 0) {
+        alert('Por favor, insira um valor válido maior que zero.');
+        return;
+      }
+      // Valor formatado com duas casas decimais usando ponto como separador decimal
+      const valor = parseFloat(valorInput).toFixed(2);
+
+      // Dados Pix
+      const pixKey = "60556737000117"; // sua chave CNPJ
+      const nome = "João Neves Santos"; // nome do recebedor
+      const cidade = "SÃO PAULO"; // cidade do recebedor
+
+      const payload = montarPixPayload({pixKey, nome, cidade, valor});
+
+      // Mostrar payload e QR Code
+      const pixInfo = document.getElementById('pixInfo');
+      const pixPayload = document.getElementById('pixPayload');
+      const qrCode = document.getElementById('qrCode');
+
+      pixPayload.value = payload;
+
+      // Gerar QR Code usando api do qrserver.com
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(payload)}`;
+      qrCode.src = qrUrl;
+
+      pixInfo.style.display = 'block';
+    }
+
+    function copiarPix() {
+      const pixPayload = document.getElementById('pixPayload');
+      pixPayload.select();
+      pixPayload.setSelectionRange(0, 99999); // Para mobile
+
+      navigator.clipboard.writeText(pixPayload.value).then(() => {
+        alert('Código Pix copiado!');
+      });
+    }
+  </script>
+</body>
+</html>
